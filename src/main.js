@@ -2,6 +2,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import { appConfig } from './config.js';
+import { githubConnected, githubSyncConfigured, loadGithubConfig, saveGithubConfig, startGithubDeviceLogin } from './github-sync.js';
 
 const ARP = { lng: 105.8072, lat: 21.2212 };
 const STORAGE = { ils: 'vvnb_ils_devices_named', drawings: 'vvnb_drawn_features_undo' };
@@ -25,6 +26,8 @@ let drawnPointMarkers = [];
 let activeIlsPopup = null;
 let dataFileHandle = null;
 let fileSaveTimer = null;
+let githubConfigSha = null;
+let githubSaveTimer = null;
 let mapReady = false;
 
 document.querySelector('#app').innerHTML = `
@@ -50,6 +53,7 @@ document.querySelector('#app').innerHTML = `
         <div id="ils-list" class="device-list"></div>
         <div class="storage-note"><span>▣</span><p>${appConfig.storageMode === 'supabase' ? 'Đồng bộ cloud đang được cấu hình' : 'Dữ liệu được lưu trên trình duyệt này'}<br/><small>${appConfig.storageMode === 'supabase' ? 'Cần kết nối Supabase để đồng bộ giữa các máy' : 'Chọn file tự lưu để ghi thay đổi vào một tệp dữ liệu riêng'}</small></p></div>
         <div class="backup-actions"><button class="button secondary" type="button" id="choose-data-file">▣ Chọn file tự lưu</button><button class="button secondary" type="button" id="open-data-file">↥ Mở file dữ liệu</button><button class="button secondary" type="button" id="export-project">↓ Sao lưu dữ liệu</button><label class="button secondary import-project" for="import-project">↑ Mở tệp sao lưu<input id="import-project" type="file" accept="application/json,.json" /></label></div>
+        <div class="github-sync hidden" id="github-sync"><button class="button primary" type="button" id="github-connect">Kết nối GitHub</button><small id="github-status">Dữ liệu sẽ tự đồng bộ vào configure.json</small></div>
       </section>
       <section class="panel" id="panel-camera">
         <div class="section-heading"><div><small>ĐIỀU HƯỚNG BẢN ĐỒ</small><h1>Góc nhìn 3D</h1></div></div>
@@ -80,7 +84,7 @@ map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-
 map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
 const esc = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-const save = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); scheduleDataFileSave(); } catch { notify('Không thể lưu dữ liệu. Bộ nhớ trình duyệt có thể đã đầy.'); } };
+const save = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); scheduleDataFileSave(); scheduleGithubSave(); } catch { notify('Không thể lưu dữ liệu. Bộ nhớ trình duyệt có thể đã đầy.'); } };
 let toastTimer;
 function notify(message) { const el = document.querySelector('#toast'); el.textContent = message; el.classList.add('visible'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('visible'), 2600); }
 function setTab(tab) { document.querySelectorAll('.tab').forEach(button => button.classList.toggle('active', button.dataset.tab === tab)); document.querySelectorAll('.panel').forEach(panel => panel.classList.toggle('active', panel.id === `panel-${tab}`)); }
@@ -276,6 +280,18 @@ function scheduleDataFileSave() {
   clearTimeout(fileSaveTimer);
   fileSaveTimer = setTimeout(() => writeDataFile().catch(() => notify('Không thể ghi file dữ liệu. Hãy chọn lại file.')), 350);
 }
+function scheduleGithubSave() {
+  if (!githubSyncConfigured() || !githubConnected()) return;
+  clearTimeout(githubSaveTimer);
+  githubSaveTimer = setTimeout(async () => {
+    try {
+      const latest = await loadGithubConfig();
+      githubConfigSha = latest?.sha ?? null;
+      githubConfigSha = await saveGithubConfig(getProjectData(), githubConfigSha);
+      document.querySelector('#github-status').textContent = 'Đã tự đồng bộ configure.json với GitHub.';
+    } catch { document.querySelector('#github-status').textContent = 'Không thể đồng bộ. Kiểm tra quyền GitHub hoặc kết nối mạng.'; }
+  }, 800);
+}
 function applyProjectData(backup) {
   if (backup?.format !== 'vvnb-airfield-planner' || !Array.isArray(backup.ilsDevices) || !Array.isArray(backup.drawnFeatures) || !backup.ilsDevices.every(isValidIlsDevice) || !backup.drawnFeatures.every(isValidDrawing)) throw new Error('invalid backup');
   ilsDevices = backup.ilsDevices.map((device, index) => ({ ...device, id: device.id ?? Date.now() + index, lat: Number(device.lat), lng: Number(device.lng), freq: Number(device.freq) }));
@@ -327,6 +343,34 @@ document.querySelector('#open-data-file').addEventListener('click', async () => 
     notify('Đã mở file dữ liệu. Các thay đổi tiếp theo sẽ tự lưu vào file này.');
   } catch (error) { if (error.name !== 'AbortError') notify('File dữ liệu không hợp lệ hoặc không thể mở.'); }
 });
+if (githubSyncConfigured()) {
+  const syncBox = document.querySelector('#github-sync');
+  const connectButton = document.querySelector('#github-connect');
+  const status = document.querySelector('#github-status');
+  syncBox.classList.remove('hidden');
+  if (githubConnected()) {
+    connectButton.textContent = 'Đồng bộ GitHub đang bật';
+    connectButton.disabled = true;
+    loadGithubConfig().then(remote => {
+      githubConfigSha = remote?.sha ?? null;
+      if (remote?.data) { applyProjectData(remote.data); status.textContent = 'Đã tải configure.json từ GitHub.'; }
+    }).catch(() => { status.textContent = 'Không thể tải configure.json từ GitHub.'; });
+  } else {
+    connectButton.addEventListener('click', async () => {
+      try {
+        await startGithubDeviceLogin(device => {
+          status.innerHTML = `Mở <a href="${device.verification_uri}" target="_blank" rel="noreferrer">GitHub</a> và nhập mã: <b>${device.user_code}</b>`;
+        });
+        connectButton.textContent = 'Đồng bộ GitHub đang bật';
+        connectButton.disabled = true;
+        const remote = await loadGithubConfig();
+        githubConfigSha = remote?.sha ?? null;
+        if (remote?.data) applyProjectData(remote.data); else scheduleGithubSave();
+        status.textContent = 'Đã kết nối GitHub và đồng bộ configure.json.';
+      } catch { status.textContent = 'Không thể kết nối GitHub. Kiểm tra GitHub OAuth App.'; }
+    });
+  }
+}
 loadDataFileHandle().then(async handle => { if (handle && await handle.queryPermission({ mode: 'readwrite' }) === 'granted') dataFileHandle = handle; }).catch(() => {});
 
 map.on('load', () => {
