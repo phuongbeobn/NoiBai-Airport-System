@@ -32,7 +32,9 @@ Workflow [deploy-pages.yml](.github/workflows/deploy-pages.yml) sẽ tự xây d
 
 ## Đồng bộ configure.json qua GitHub
 
-GitHub OAuth cần một dịch vụ backend để giữ bí mật OAuth client secret và ghi file `configure.json` an toàn. Thiết lập này cần các giá trị ngoài dự án: GitHub OAuth App Client ID, Client Secret, repository đích và URL của dịch vụ đồng bộ. Không đưa Client Secret hoặc personal token vào mã nguồn, `.env` public, hoặc GitHub Pages.
+Ứng dụng dùng GitHub OAuth Device Flow để ghi `configure.json` sau mỗi thay đổi. Bạn cần tạo GitHub OAuth App và dùng **Client ID** trong biến `VITE_GITHUB_OAUTH_CLIENT_ID`; không đưa Client Secret hoặc personal token vào mã nguồn, `.env` public, hay GitHub Pages.
+
+Dùng repository private riêng để lưu `configure.json`, ví dụ `phuongbeobn/NoiBai-Airport-Config`, rồi đặt tên đó vào `VITE_GITHUB_REPOSITORY`. Repository website có thể public để người khác xem, còn dữ liệu cấu hình chỉ được đọc/ghi bởi các tài khoản GitHub có quyền truy cập repository dữ liệu.
 
 ## Tính năng
 
